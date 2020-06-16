@@ -1,5 +1,6 @@
 /*
    Copyright The containerd Authors.
+   Copyright 2020 Authors of Arktos.
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -18,6 +19,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	goruntime "runtime"
 	"strings"
@@ -348,6 +350,16 @@ func cniNamespaceOpts(id string, config *runtime.PodSandboxConfig) ([]cni.Namesp
 		cni.WithLabels(toCNILabels(id, config)),
 	}
 
+	if config.Annotations != nil {
+		cniargs, err := toCNIArgs(config.Annotations["arktos.futurewei.com/cni-args"])
+		if err != nil {
+			return nil, fmt.Errorf("cni-args error: %s", err)
+		}
+		if len(cniargs) > 0 {
+			opts = append(opts, cni.WithLabels(cniargs))
+		}
+	}
+
 	portMappings := toCNIPortMappings(config.GetPortMappings())
 	if len(portMappings) > 0 {
 		opts = append(opts, cni.WithCapabilityPortMap(portMappings))
@@ -374,11 +386,43 @@ func cniNamespaceOpts(id string, config *runtime.PodSandboxConfig) ([]cni.Namesp
 // toCNILabels adds pod metadata into CNI labels.
 func toCNILabels(id string, config *runtime.PodSandboxConfig) map[string]string {
 	return map[string]string{
+		"K8S_POD_TENANT":             config.GetMetadata().GetTenant(),
 		"K8S_POD_NAMESPACE":          config.GetMetadata().GetNamespace(),
 		"K8S_POD_NAME":               config.GetMetadata().GetName(),
 		"K8S_POD_INFRA_CONTAINER_ID": id,
 		"IgnoreUnknown":              "1",
 	}
+}
+
+// toCNIArgs converts annotation value to extra CNI labels.
+// input is semicolon-separated key-value pairs, like "FOO=BAR;ABC=123"
+func toCNIArgs(cniargs string) (map[string]string, error) {
+	if strings.ContainsAny(cniargs, `"'`) {
+		return nil, errors.New("invalid quote char")
+	}
+
+	result := map[string]string{}
+	kvs := strings.Split(cniargs, ";")
+	for _, s := range kvs {
+		kv := strings.SplitN(strings.TrimSpace(s), "=", 2)
+
+		k := strings.TrimSpace(kv[0])
+		if len(k) == 0 {
+			if len(kv) == 2 {
+				return nil, fmt.Errorf("missing key in string %q", s)
+			}
+			continue
+		}
+
+		if len(kv) != 2 {
+			return nil, fmt.Errorf("missing '=' char in %q", s)
+		}
+
+		v := strings.TrimSpace(kv[1])
+		result[k] = v
+	}
+
+	return result, nil
 }
 
 // toCNIBandWidth converts CRI annotations to CNI bandwidth.
